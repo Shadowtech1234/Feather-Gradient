@@ -1,16 +1,25 @@
 #version 330 compatibility
 
+#include "/lib/shadowDistort.glsl"
+
 uniform sampler2D colortex0;
 uniform sampler2D colortex1;
 uniform sampler2D colortex2;
 uniform sampler2D depthtex0;
 
- /*
- const int colortex0Format = RGB16;
- */
+uniform sampler2D shadowtex0;
+uniform sampler2D shadowtex1;
+uniform sampler2D shadowcolor0;
 
- uniform vec3 shadowLightPosition;
- uniform mat4 gbufferModelViewInverse;
+/*
+const int colortex0Format = RGB16;
+*/
+
+uniform vec3 shadowLightPosition;
+uniform mat4 gbufferModelViewInverse;
+uniform mat4 gbufferProjectionInverse;
+uniform mat4 shadowModelView;
+uniform mat4 shadowProjection;
 
 const vec3 blocklightColor = vec3(1.0, 0.5, 0.08);
 const vec3 skylightColor = vec3(0.05, 0.15, 0.3);
@@ -21,6 +30,37 @@ in vec2 texcoord;
 
 /* RENDERTARGETS: 0 */
 layout(location = 0) out vec4 color;
+
+vec3 projectAndDivide(mat4 projectionMatrix, vec3 position){
+  vec4 homPos = projectionMatrix * vec4(position, 1.0);
+  return homPos.xyz / homPos.w;
+}
+
+
+vec3 getShadow(vec3 shadowScreenPos){
+  float transparentShadow = step(shadowScreenPos.z, texture(shadowtex0, shadowScreenPos.xy).r); // sample the shadow map which has everything
+  
+  // the value 1.0 means 100 percent of sunlight is getting through
+  if (transparentShadow == 1.0){
+    //no shadow
+    return vec3(1.0);
+  }
+
+  float opaqueShadow = step(shadowScreenPos.z, texture(shadowtex1, shadowScreenPos.xy).r); // sample the shadow map containing gonly opque stuff
+
+  if (opaqueShadow == 0.0){
+    //if needed a shadow for a block that is fully opaque like a plank, then we call the full shadow
+    return vec3(0.0);
+  }
+
+  //contains the color and alpha (transparency) of the thign casting the shadow
+  vec4 shadowColor = texture(shadowcolor0, shadowScreenPos.xy);
+
+  //We use (1.0 - alpha) to get how much logjt is let through, and multiply that by the color of the thing thats casting the shadow
+  return shadowColor.rgb * (1.0 - shadowColor.a);
+}
+
+
 
 void main() {
   vec2 lightmap = texture(colortex1, texcoord).xy;
@@ -36,11 +76,25 @@ void main() {
     if (depth == 1.0) {
         return; // let's skip whats beneath us - the lighting apply logic!
     }
+  
+
+  vec3 ndcPos = vec3(texcoord.xy, depth) * 2.0 - 1.0;
+  vec3 viewPos = projectAndDivide(gbufferProjectionInverse, ndcPos);
+  vec3 feetPlayerPos = (gbufferModelViewInverse * vec4(viewPos, 1.0)).xyz;
+  vec3 shadowViewPos = (shadowModelView * vec4(feetPlayerPos, 1.0)).xyz;
+  vec4 shadowClipPos = shadowProjection * vec4(shadowViewPos, 1.0);
+  //to stop shadow acne
+  shadowClipPos.z -= 0.001;
+  shadowClipPos.xyz = distortShadowClipPos(shadowClipPos.xyz);
+  vec3 shadowNdcPos = shadowClipPos.xyz / shadowClipPos.w;
+  vec3 shadowScreenPos = shadowNdcPos * 0.5 + 0.5;
+
+  vec3 shadow = getShadow(shadowScreenPos);
 
   vec3 blocklight = lightmap.x * blocklightColor;
   vec3 skylight = lightmap.y * skylightColor;
   vec3 ambient = ambientColor;
-  vec3 sunlight = sunlightColor * clamp(dot(worldLightVector, normal), 0.0, 1.0) * lightmap.y;
+  vec3 sunlight = sunlightColor * clamp(dot(worldLightVector, normal), 0.0, 1.0) * shadow;
 
 
 
